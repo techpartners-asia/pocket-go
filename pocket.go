@@ -1,6 +1,10 @@
 package pocket
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+	"sync"
+)
 
 type pocket struct {
 	merchant      string
@@ -8,17 +12,39 @@ type pocket struct {
 	client_secret string
 	terminal_id   int64
 	environment   string // "sandbox" or "production" | default is "production"
-	loginObject   *PocketGetTokenResponse
-	expire_in     *int64
 	oauthHost     string
 	merchantHost  string
 	realm         string
+
+	// token is the credential installed by SetToken. The SDK reads it and
+	// never populates it on its own; see Token.
+	mu    sync.RWMutex
+	token Token
 }
 
+// Pocket [Pocket SDK Interface]
+//
+// # Authentication
+//
+// This SDK does not manage tokens. Obtain one with [Pocket.Login], install it
+// with [Pocket.SetToken], and every call below carries it. A call made with no
+// token installed fails with [ErrNoToken]; a call whose token Pocket rejects
+// fails with [ErrUnauthorized], which is the signal to log in again and retry.
 type Pocket interface {
+	// Login [Access Token авах] — one request, no caching.
+	Login(ctx context.Context) (Token, error)
+
+	// SetToken installs the token subsequent calls carry.
+	SetToken(token Token)
+
+	// Token returns the installed token.
+	Token() Token
+
 	CreateInvoice(input PocketCreateInvoiceInput) (PocketCreateInvoiceResponse, error)
 	GetInvoiceByInvoiceID(invoiceID string) (PocketInvoiceDetailResponse, error)
 	GetInvoiceByOrderNumber(orderNumber string) (PocketInvoiceDetailResponse, error)
+
+	// Close clears the installed token.
 	Close()
 }
 
@@ -30,6 +56,8 @@ const (
 	merchantHostSandbox = "service-staging.invescore.mn/merchant"
 )
 
+// New performs no network I/O. The returned client has no token until one is
+// installed with [Pocket.SetToken]; see [Pocket] on authentication.
 func New(merchant, client_id, client_secret, environment string, terminal_id int64) Pocket {
 
 	var oauthHost, merchantHost string
@@ -55,8 +83,6 @@ func New(merchant, client_id, client_secret, environment string, terminal_id int
 		oauthHost:     oauthHost,
 		realm:         realm,
 		merchantHost:  merchantHost,
-		loginObject:   nil,
-		expire_in:     nil,
 	}
 }
 
@@ -114,7 +140,9 @@ func (p *pocket) GetInvoiceByOrderNumber(orderNumber string) (PocketInvoiceDetai
 	return response, nil
 }
 
+// Close clears the installed token. It does not reach Pocket: there is
+// nothing to revoke, and the token may still be in use elsewhere by whoever
+// owns it.
 func (s *pocket) Close() {
-	s.loginObject = nil
-	s.expire_in = nil
+	s.SetToken(Token{})
 }
